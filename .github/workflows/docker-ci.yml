@@ -24,7 +24,6 @@ jobs:
       - name: Set up Playwright
         run: npm ci
       - name: Set up Playwright Browsers
-        id: playwright
         shell: bash
         run: |
           # The official image includes browsers and all system dependencies.
@@ -32,7 +31,16 @@ jobs:
           playwright_version=$(node -p "require('@playwright/test/package.json').version")
           playwright_image="mcr.microsoft.com/playwright:v${playwright_version}-noble"
           docker pull "$playwright_image"
-          echo "image=$playwright_image" >> "$GITHUB_OUTPUT"
+          # Keep this container for the install and test steps so any installed
+          # browser files remain available to the tests.
+          docker run --detach --init --ipc=host --network=host \
+            --name exercise8-playwright \
+            --env CI=true \
+            --volume "$PWD:/work" \
+            --workdir /work \
+            "$playwright_image" sleep infinity
+          # System libraries are already included; no APT downloads are needed.
+          docker exec exercise8-playwright npx playwright install chromium
       - name: Setup Docker buildx
         uses: docker/setup-buildx-action@v4
       - name: Launch Web Service
@@ -41,17 +49,7 @@ jobs:
         timeout-minutes: 5
         run: sh wait-for-webserver.sh
       - name: Run Playwright Tests
-        env:
-          PLAYWRIGHT_IMAGE: ${{ steps.playwright.outputs.image }}
-        run: |
-          # Host networking keeps http://localhost:8080 reachable by the tests.
-          # Mount the project so the HTML report is available to the next step.
-          docker run --rm --init --ipc=host --network=host \
-            --env CI=true \
-            --volume "$PWD:/work" \
-            --workdir /work \
-            "$PLAYWRIGHT_IMAGE" \
-            npx playwright test --project=chromium
+        run: docker exec exercise8-playwright npx playwright test --project=chromium
       - name: Upload Playwright results as artifact
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v6
@@ -63,4 +61,6 @@ jobs:
         run: docker compose logs
       - name: Stop Web Service
         if: always()
-        run: docker compose down
+        run: |
+          docker rm --force exercise8-playwright || true
+          docker compose down
